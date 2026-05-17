@@ -13,11 +13,13 @@
 
 import { serve } from "https://deno.land/std@0.224.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
+import { callIA } from "../_shared/ai-logic.ts";
+import { procesarPedidoTaxi } from "../_shared/dispatch-logic.ts";
 
 // Variables de entorno
 const SUPABASE_URL = Deno.env.get("URL")!;
 const SUPABASE_SERVICE_ROLE_KEY = Deno.env.get("SERVICE_ROLE_KEY")!;
-const TWILIO_PHONE_NUMBER = Deno.env.get("TWILIO_PHONE_NUMBER");
+// const _TWILIO_PHONE_NUMBER = Deno.env.get("TWILIO_PHONE_NUMBER");
 
 // Cliente Supabase
 const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, {
@@ -37,7 +39,7 @@ serve(async (req: Request) => {
 
         // Datos de la llamada
         const from = formData.get("From")?.toString() || "";
-        const callSid = formData.get("CallSid")?.toString() || "";
+        const _callSid = formData.get("CallSid")?.toString() || "";
         const speechResult = formData.get("SpeechResult")?.toString(); // Transcripción automática de Twilio
 
         console.log(`\n📞 Llamada de ${from}`);
@@ -50,7 +52,7 @@ serve(async (req: Request) => {
 
             return new Response(
                 generateVoiceTwiML(
-                    "Hola, bienvenido al servicio de taxis. ¿Desde dónde necesitas un taxi?",
+                    "Bienvenido a Taxi-Flaz. ¿Deseas pedir un taxi? Por favor, dime tu nombre y dirección.",
                     true, // Esperar respuesta
                 ),
                 { headers: { "Content-Type": "text/xml" } },
@@ -62,25 +64,72 @@ serve(async (req: Request) => {
         // ========================================
         console.log(`🗣️ Cliente dijo: "${speechResult}"`);
 
-        // AQUÍ PUEDES INTEGRAR LA MISMA LÓGICA DE IA
-        // que usas en Telegram para procesar la solicitud
+        // 🤖 ANALIZAR CON IA
+        const interpretation = await callIA(
+            speechResult,
+            "Cliente por Teléfono",
+            false,
+        );
 
-        // Ejemplo simple
-        if (speechResult.toLowerCase().includes("cancelar")) {
+        const { intent, response: aiResponse, location, customer_name } = interpretation;
+
+        // Si quiere un taxi y dio ubicación, procesamos
+        if ((intent === "PEDIR_TAXI" || intent === "UBICACION") && location) {
+            const clienteInfo = customer_name ? `${customer_name} (${from})` : from;
+            
+            const taxi = await procesarPedidoTaxi(
+                supabase,
+                "whatsapp", 
+                from,
+                from,
+                location,
+                aiResponse,
+                clienteInfo,
+                customer_name,
+            );
+
+            if (taxi) {
+                // Prioridad: 1. Campo telefono, 2. whatsapp_id limpio
+                const rawPhone = taxi.telefono || (taxi.whatsapp_id ? taxi.whatsapp_id.replace("whatsapp:", "") : null);
+                
+                if (rawPhone) {
+                    const dialNumber = rawPhone.startsWith("+") ? rawPhone : `+${rawPhone}`;
+
+                    return new Response(
+                        `<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+  <Say voice="Polly.Mia" language="es-MX">Un momento ${customer_name || ""}, te comunico con el taxista ${taxi.nombre}.</Say>
+  <Dial timeout="20">${dialNumber}</Dial>
+  <Say voice="Polly.Mia" language="es-MX">El taxista no ha podido contestar en este momento, pero ya le hemos enviado tu ubicación y nombre por WhatsApp. Por favor, mantente atento.</Say>
+</Response>`,
+                        { headers: { "Content-Type": "text/xml" } },
+                    );
+                }
+            } else {
+                // Caso en que entró en lista de espera (procesarPedidoTaxi devolvió null)
+                return new Response(
+                    generateVoiceTwiML(
+                        `Lo siento ${customer_name || ""}, no hay taxis disponibles ahora, pero ya estás en lista de espera. Te avisaremos en cuanto uno se libere.`,
+                        false,
+                    ),
+                    { headers: { "Content-Type": "text/xml" } },
+                );
+            }
+
             return new Response(
                 generateVoiceTwiML(
-                    "Entendido, cancelando tu solicitud. Gracias por llamar.",
-                    false, // No esperar respuesta, colgar
+                    aiResponse || "Tu pedido está siendo procesado.",
+                    false,
                 ),
                 { headers: { "Content-Type": "text/xml" } },
             );
         }
 
-        // Respuesta por defecto
+        // Si falta info, volver a preguntar
         return new Response(
             generateVoiceTwiML(
-                `Recibido: ${speechResult}. Procesando tu solicitud de taxi.`,
-                false,
+                aiResponse || "¿Podrías repetirme desde dónde necesitas el taxi?",
+                true,
             ),
             { headers: { "Content-Type": "text/xml" } },
         );
@@ -102,7 +151,7 @@ function generateVoiceTwiML(message: string, askForInput: boolean): string {
         // Pedir input del usuario
         return `<?xml version="1.0" encoding="UTF-8"?>
 <Response>
-  <Gather input="speech" timeout="5" language="es-MX" speechTimeout="auto" action="">
+  <Gather input="speech" timeout="10" language="es-MX" speechTimeout="auto" action="">
     <Say voice="Polly.Mia" language="es-MX">${escapeXml(message)}</Say>
   </Gather>
   <Say voice="Polly.Mia" language="es-MX">No te escuchamos. Por favor, intenta de nuevo.</Say>

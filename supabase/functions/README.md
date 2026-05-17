@@ -1,86 +1,80 @@
-# Sistema de Voz Multi-Canal - Resumen Final
+# Sistema de Voz y Mensajería Multi-Canal (Taxi-Flaz)
 
-## ✅ Completado
+Este repositorio contiene la lógica de despacho inteligente para Taxi-Flaz, migrada recientemente de Twilio a infraestructuras más robustas: **Meta Cloud API** (WhatsApp) y **Plivo** (Voz).
 
-### 🟢 Telegram Voice Messages (ACTIVO)
+este es el token permanente EAANIk1fHRE0BRBaklT2JMOhu0rtF0Kr51U5wOWRuWadDVnGbjz7CzScO3MB8jK7ufKGPgcl2PPxhb84kMa4EbLdK6OoWZAHsrbf7lurNBkGbpxLlmT6nPNEwpXibwdLVRs1Co940vWZCjamW6qllDENtRXUcXS9oVw6BY0DDKwZCy6kNsRcUDQemZBarxAzOvQZDZD
 
-✅ Desplegado y funcionando
+cuenta de vonage para llamada.
+correo personal.
+contraseña [q34hu79k.100]
+contraseña de fasebook yesenia
+contraseña [q34hu79k.10]
 
-- Mensajes de voz con transcripción Groq Whisper
-- 100% gratis
-- Listo para usar
 
-### 🔵 WhatsApp Voice Messages (PREPARADO)
 
-📋 Estructura lista, no desplegado
+## 🚀 Infraestructura Actual
 
-- Archivo: `whatsapp-webhook/index.ts`
-- Guía: `whatsapp-webhook/SETUP.md`
-- Requiere: Twilio WhatsApp Business API
-- Costo: ~$5-10 USD/mes
+### 🟢 WhatsApp (Meta Cloud API) - ACTIVO
+- **Webhook**: `whatsapp-meta-webhook`
+- **Capacidades**:
+    - Recepción de texto y ubicación en tiempo real.
+    - Autoregistro de taxistas autorizados por número de teléfono.
+    - Respuestas inteligentes vía IA (Groq/OpenAI).
+- **Secrets Requeridos**: `WHATSAPP_ACCESS_TOKEN`, `WHATSAPP_PHONE_NUMBER_ID`.
 
-### 🔵 Phone Calls (PREPARADO)
+### 📞 Llamadas de Voz (Plivo) - ACTIVO
+- **Webhook**: `plivo-voice-webhook`
+- **Capacidades**:
+    - Reconocimiento de voz en español natural (`Polly.Mia`).
+    - Transferencia automática (`Dial`) al taxista de turno.
+    - Manejo inteligente de "Lista de Espera" si no hay conductores.
+- **Secrets Requeridos**: `PLIVO_AUTH_ID`, `PLIVO_AUTH_TOKEN`.
 
-📋 Estructura lista, no desplegado
-
-- Archivo: `twilio-voice-webhook/index.ts`
-- Guía: `twilio-voice-webhook/SETUP.md`
-- Requiere: Número de Twilio
-- Costo: ~$10-15 USD/mes
-
----
-
-## 🎯 Uso Actual (Telegram)
-
-**Enviar nota de voz:**
-
-1. Mantén presionado el micrófono en Telegram
-2. Di tu solicitud: "Necesito un taxi en Calle 5"
-3. El bot transcribe y procesa automáticamente
+### 🔵 Telegram (Voz y Texto) - ACTIVO
+- **Webhook**: `telegram-webhook`
+- **Capacidades**: Transcripción Whisper para notas de voz.
 
 ---
 
-## 🚀 Activar WhatsApp/Llamadas en el Futuro
+## 🛠️ Guía de Despliegue (Supabase)
 
-**WhatsApp:**
+Para desplegar o actualizar las funciones:
 
 ```bash
-# 1. Configurar secrets
-supabase secrets set TWILIO_ACCOUNT_SID=ACxxx
-supabase secrets set TWILIO_AUTH_TOKEN=xxx
+# 1. Configurar Secrets (Si no se ha hecho)
+supabase secrets set WHATSAPP_ACCESS_TOKEN=...
+supabase secrets set PLIVO_AUTH_ID=...
 
-# 2. Desplegar
-supabase functions deploy whatsapp-webhook
-
-# 3. Ver whatsapp-webhook/SETUP.md para más detalles
+# 2. Desplegar Funciones
+supabase functions deploy whatsapp-meta-webhook
+supabase functions deploy plivo-voice-webhook
+supabase functions deploy telegram-webhook
 ```
 
-**Llamadas:**
-
-```bash
-# 1. Configurar secrets
-supabase secrets set TWILIO_PHONE_NUMBER=+1xxx
-
-# 2. Desplegar
-supabase functions deploy twilio-voice-webhook
-
-# 3. Ver twilio-voice-webhook/SETUP.md para más detalles
-```
-
----
-
-## 📁 Estructura de Archivos
+## 📁 Estructura del Proyecto
 
 ```
 supabase/functions/
 ├── _shared/
-│   └── audio-transcription.ts ✅ (compartido por todos)
-├── telegram-webhook/
-│   └── index.ts ✅ (DESPLEGADO - voz activa)
-├── whatsapp-webhook/
-│   ├── index.ts 📋 (listo para desplegar)
-│   └── SETUP.md
-└── twilio-voice-webhook/
-    ├── index.ts 📋 (listo para desplegar)
-    └── SETUP.md
+│   ├── ai-logic.ts          🧠 Cerebro de la IA
+│   ├── dispatch-logic.ts    🚕 Lógica de despacho y turnos
+│   ├── messaging.ts         ✉️ Proveedor unificado (Meta/Twilio/Telegram)
+│   └── lista_taxistas.ts    📋 Conductores autorizados
+├── whatsapp-meta-webhook/   🤖 Webhook oficial de WhatsApp
+├── plivo-voice-webhook/     📞 Webhook de voz (Plivo)
+└── telegram-webhook/        🔵 Webhook de Telegram
 ```
+
+---
+
+## 🚕 Flujo de Usuario
+
+1. **Cliente llama o escribe**: La IA identifica su nombre y dirección.
+2. **Asignación**: El sistema busca al taxista más antiguo en estado `DISPONIBLE`.
+3. **Notificación**:
+    - Si es llamada, se hace un `Dial` directo al taxista.
+    - El taxista recibe un WhatsApp con los detalles del cliente.
+4. **Confirmación**: El taxista responde "Acepto" y el cliente es notificado.
+
+---
+*Mantenido por Taxi-Flaz Dev Team.*
