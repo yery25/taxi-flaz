@@ -3,8 +3,9 @@ import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import { callIA } from "../_shared/ai-logic.ts";
 import { sendMessage } from "../_shared/messaging.ts";
 import { LISTA_TAXISTAS } from "../_shared/lista_taxistas.ts";
-import { reorganizarTurnos, asignarPedidosPendientes } from "../_shared/dispatch-logic.ts";
+import { reorganizarTurnos, asignarPedidosPendientes, procesarPedidoTaxi, rechazarPedido, verificarTimeoutsPedidos } from "../_shared/dispatch-logic.ts";
 import { transcribeWithGroq } from "../_shared/audio-transcription.ts";
+import { registrarLogDetallado } from "../_shared/logger.ts";
 
 const SUPABASE_URL = Deno.env.get("URL")!;
 const SUPABASE_SERVICE_ROLE_KEY = Deno.env.get("SERVICE_ROLE_KEY")!;
@@ -17,18 +18,32 @@ serve(async (req: Request) => {
             return new Response("Method not allowed", { status: 405 });
         }
 
+        // ⏰ Verificar timeouts de 4 minutos automáticamente
+        await verificarTimeoutsPedidos(supabase);
+
         const body = await req.json();
         // SÚPER LOG: Para ver exactamente qué manda Kapso en llamadas o mensajes
         console.log("📥 [KAPSO PAYLOAD]:", JSON.stringify(body, null, 2));
 
         const message = body.message;
-        if (!message || !message.text) {
-            return new Response("No message text found", { status: 200 });
+        if (!message) {
+            return new Response("No message found", { status: 200 });
         }
 
         const whatsappId = message.from;
         const nombreStr = body.conversation?.contact_name || "Cliente WhatsApp";
-        let text = message.text?.body || "";
+        let text = "";
+        
+        if (message.type === "interactive") {
+            const interactive = message.interactive;
+            if (interactive?.button_reply) {
+                text = interactive.button_reply.title || interactive.button_reply.id;
+            } else if (interactive?.list_reply) {
+                text = interactive.list_reply.title || interactive.list_reply.id;
+            }
+        } else {
+            text = message.text?.body || "";
+        }
 
         // 🎙️ SOPORTE PARA MENSAJES DE VOZ EN WHATSAPP (KAPSO)
         if (message.type === "audio" || message.audio) {
@@ -65,7 +80,43 @@ serve(async (req: Request) => {
 
         const isTaxista = !!existingTaxi || !!autorizado;
 
-        // 2. LLAMADA A IA
+        // 📊 Log detallado de entrada del mensaje WhatsApp (solo para clientes, no taxistas)
+        if (!isTaxista) {
+            await registrarLogDetallado(supabase, {
+                evento: "KAPSO_MENSAJE_CLIENTE",
+                clientePhone: whatsappId,
+                clienteNombre: nombreStr,
+                detalles: { texto: text.substring(0, 100), tipo: message.type || "text" }
+            });
+        }
+
+        // 🚀 BYPASS DE IA PARA VELOCIDAD EXTREMA EN SALUDOS Y BOTONES
+        const textLower = text.toLowerCase().trim();
+        if (!isTaxista && (textLower === "hola" || textLower === "buenas" || textLower === "menu" || textLower === "menú" || textLower === "saludos")) {
+            const saludoText = `¡Hola ${nombreStr}! Bienvenido a *Taxi Flash* 🚖.\n\nSoy tu asistente virtual. ¿En qué te puedo ayudar hoy?`;
+            const menuBotones = {
+                inline_keyboard: [
+                    [
+                        { text: "🚕 Pedir Taxi", callback_data: "pedir_taxi" },
+                        { text: "🗣️ Soporte Humano", callback_data: "soporte_humano" }
+                    ]
+                ]
+            };
+            await sendMessage("whatsapp_kapso", whatsappId, saludoText, menuBotones);
+            return new Response(JSON.stringify({ success: true }), { headers: { "Content-Type": "application/json" } });
+        }
+        
+        if (!isTaxista && (textLower.includes("pedir taxi") || textLower === "pedir_taxi")) {
+            await sendMessage("whatsapp_kapso", whatsappId, "Perfecto. Por favor, indícame la dirección exacta donde debemos enviarte el taxi (incluye ciudad o referencia):");
+            return new Response(JSON.stringify({ success: true }), { headers: { "Content-Type": "application/json" } });
+        }
+        
+        if (!isTaxista && (textLower.includes("soporte humano") || textLower === "soporte_humano")) {
+            await sendMessage("whatsapp_kapso", whatsappId, "En un momento uno de nuestros agentes se pondrá en contacto contigo. Por favor, espera en línea.");
+            return new Response(JSON.stringify({ success: true }), { headers: { "Content-Type": "application/json" } });
+        }
+
+        // 2. LLAMADA A IA PARA EL RESTO DE MENSAJES
         const interpretation = await callIA(text, nombreStr, isTaxista, existingTaxi || undefined);
         const { intent, response: aiResponse } = interpretation;
 
@@ -73,13 +124,30 @@ serve(async (req: Request) => {
             // --- LÓGICA PARA TAXISTAS ---
             console.log(`🚕 Mensaje de TAXISTA: ${nombreStr}`);
             
+            // Buscar si ya existe en la base de datos por número de taxi o cédula para obtener su id y conservar telegram_id
+            const { data: dbTaxi } = await supabase
+                .from("taxis")
+                .select("*")
+                .or(`whatsapp_id.eq.${whatsappId},numero_taxista.eq.${existingTaxi?.numero_taxista || autorizado?.numero_taxista || ""}${autorizado?.cedula ? `,cedula.eq.${autorizado.cedula}` : ""}`)
+                .maybeSingle();
+
+            const placeholderTelegramId = dbTaxi?.telegram_id || -(100 + Number((existingTaxi?.numero_taxista || autorizado?.numero_taxista || "0").replace(/\D/g, "")));
+
             if (intent === "ASIGNAR_TURNO" || intent === "DISPONIBLE") {
                 await supabase.from("taxis").upsert({
+                    id: dbTaxi?.id, // Conserva el UUID original si ya existe
+                    telegram_id: placeholderTelegramId,
                     whatsapp_id: whatsappId,
-                    nombre: existingTaxi?.nombre || autorizado?.nombre,
+                    nombre: dbTaxi?.nombre || autorizado?.nombre,
+                    cedula: dbTaxi?.cedula || autorizado?.cedula,
+                    numero_taxista: dbTaxi?.numero_taxista || autorizado?.numero_taxista,
+                    telefono: dbTaxi?.telefono || autorizado?.telefono || soloNumeros,
+                    modelo: dbTaxi?.modelo || autorizado?.modelo,
+                    color: dbTaxi?.color || autorizado?.color,
+                    placa: dbTaxi?.placa || autorizado?.placa,
                     estado: "DISPONIBLE",
                     creado: new Date().toISOString()
-                }, { onConflict: 'whatsapp_id' });
+                }, { onConflict: 'id' });
                 
                 await reorganizarTurnos(supabase);
                 // ¡IMPORTANTE! Al ponerse disponible, revisamos la lista de espera
@@ -99,11 +167,11 @@ serve(async (req: Request) => {
                 const ubicacion = interpretation.location;
                 const destino = interpretation.destination || "No especificado";
 
-                // A. MEMORIA: Verificar si ya tiene un pedido activo
+                // A. MEMORIA: Verificar si ya tiene un pedido activo (evitar duplicados si el cliente sigue escribiendo)
                 const diezMinutosAtras = new Date(Date.now() - 10 * 60 * 1000).toISOString();
                 const { data: pedidoActivo } = await supabase
                     .from("pedidos")
-                    .select("id, estado")
+                    .select("id, estado, taxis(nombre, numero_taxista)")
                     .eq("cliente_telegram_id", whatsappId)
                     .in("estado", ["CREADO", "ASIGNADO", "EN_CAMINO"])
                     .gt("creado", diezMinutosAtras)
@@ -112,62 +180,29 @@ serve(async (req: Request) => {
                     .maybeSingle();
 
                 if (pedidoActivo) {
-                    if (!interpretation.location_is_new) { // Si la IA detecta que es solo seguimiento
-                         const respuestaEspera = "Tu taxi ya está solicitado y va en camino. Por favor, espera un momento.";
-                         await sendMessage("whatsapp_kapso", whatsappId, respuestaEspera);
-                         return new Response("ok");
+                    console.log(`⚠️ Cliente ${whatsappId} ya tiene pedido activo en estado ${pedidoActivo.estado}. No se crea duplicado.`);
+                    let respuestaEstado = "Tu solicitud de taxi ya está en proceso. En breve te confirmamos la unidad.";
+                    if (pedidoActivo.estado === "EN_CAMINO") {
+                        const nombreChofer = (pedidoActivo.taxis as any)?.nombre || "asignado";
+                        const ficha = (pedidoActivo.taxis as any)?.numero_taxista || "";
+                        respuestaEstado = `Tu taxi con ${nombreChofer} ${ficha ? `(${ficha})` : ''} ya va en camino hacia tu ubicación. 🚕`;
                     }
+                    await sendMessage("whatsapp_kapso", whatsappId, respuestaEstado);
+                    return new Response(JSON.stringify({ success: true }), { headers: { "Content-Type": "application/json" } });
                 }
 
-                // B. BUSCAR TAXISTA
-                const { data: taxis } = await supabase
-                    .from("taxis")
-                    .select("*")
-                    .eq("estado", "DISPONIBLE")
-                    .gt("telegram_id", 0)
-                    .order("turno", { ascending: true })
-                    .limit(1);
-
-                if (taxis && taxis.length > 0) {
-                    const taxi = taxis[0];
-                    const taxiTelegramId = taxi.telegram_id;
-
-                    const mensajeTelegram = `🚕 **NUEVO PEDIDO DE WHATSAPP**\n\n📍 **Ubicación:** ${ubicacion}\n👤 **Cliente:** ${nombreStr}\n📞 **Teléfono:** ${whatsappId}\n\n¿Aceptas este pedido?`;
-                    const replyMarkup = {
-                        inline_keyboard: [[
-                            { text: "✅ ACEPTAR VIAJE", callback_data: `confirmar_${whatsappId}` },
-                            { text: "💬 HABLAR WHATSAPP", url: `https://wa.me/${whatsappId}` }
-                        ]]
-                    };
-
-                    await sendMessage("telegram", taxiTelegramId, mensajeTelegram, replyMarkup);
-                    
-                    const { error: insertError } = await supabase.from("pedidos").insert({
-                        origen: ubicacion,
-                        cliente_telegram_id: whatsappId, // Guardamos el WhatsApp aquí para que el sistema lo encuentre
-                        taxi_id: taxi.id,
-                        estado: "ASIGNADO"
-                    });
-
-                    if (insertError) {
-                        console.error("❌ ERROR AL INSERTAR PEDIDO:", insertError);
-                    } else {
-                        console.log("✅ Pedido guardado en DB correctamente.");
-                    }
-                    
-                    await sendMessage("whatsapp_kapso", whatsappId, interpretation.response);
-                } else {
-                    // C. LISTA DE ESPERA (Si no hay taxis)
-                    await supabase.from("lista_de_espera").insert({
-                        cliente_id: whatsappId,
-                        nombre: nombreStr,
-                        origen: ubicacion,
-                        plataforma: "whatsapp_kapso"
-                    });
-
-                    await sendMessage("whatsapp_kapso", whatsappId, "🚕 Lo sentimos, no hay taxis disponibles en este momento, pero te hemos puesto en **lista de espera**. Te avisaremos automáticamente en cuanto un taxista se libere.");
-                }
-            } else {
+                const clienteInfo = nombreStr ? `${nombreStr} (${whatsappId})` : whatsappId;
+                await procesarPedidoTaxi(
+                    supabase,
+                    "whatsapp_kapso",
+                    whatsappId,
+                    whatsappId,
+                    ubicacion,
+                    interpretation.response,
+                    clienteInfo,
+                    nombreStr
+                );
+                // Ya no necesitamos manejar hola ni botones aquí porque se manejaron arriba en el Bypass
                 await sendMessage("whatsapp_kapso", whatsappId, interpretation.response);
             }
         }

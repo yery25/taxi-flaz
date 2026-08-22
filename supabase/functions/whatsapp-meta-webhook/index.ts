@@ -93,7 +93,7 @@ serve(async (req: Request) => {
 
         // --- VERIFICAR EN LISTA_TAXISTAS (Referencia Maestra) ---
         const autorizado = LISTA_TAXISTAS.find((t) =>
-            cleanNumber.endsWith(t.telefono)
+            t.telefono && cleanNumber.endsWith(t.telefono)
         );
 
         // --- SINCRONIZACIÓN Y VINCULACIÓN DE CUENTA ---
@@ -114,13 +114,19 @@ serve(async (req: Request) => {
                 if (!existingTaxi || existingTaxi.whatsapp_id !== whatsappId) {
                     console.log(`✨ Vinculando/Sincronizando taxista: ${autorizado.nombre}`);
                     
+                    const placeholderTelegramId = existingTaxi?.telegram_id || -(100 + Number(autorizado.numero_taxista.replace(/\D/g, "")));
+                    
                     const { data: syncedTaxi, error: syncError } = await supabase.from("taxis").upsert({
                         id: existingTaxi?.id, // Si existe (aunque sea por número), lo preservamos
+                        telegram_id: placeholderTelegramId,
                         whatsapp_id: whatsappId,
                         nombre: autorizado.nombre,
                         cedula: autorizado.cedula,
                         numero_taxista: autorizado.numero_taxista,
-                        telefono: autorizado.telefono,
+                        telefono: autorizado.telefono || cleanNumber,
+                        modelo: autorizado.modelo,
+                        color: autorizado.color,
+                        placa: autorizado.placa,
                         estado: existingTaxi?.estado || "DISPONIBLE",
                     }, { onConflict: "id" }).select().maybeSingle();
 

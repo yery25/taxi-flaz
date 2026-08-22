@@ -3,10 +3,6 @@
 // ========================================
 
 const TELEGRAM_TOKEN = Deno.env.get("TELEGRAM_BOT_TOKEN");
-const TWILIO_ACCOUNT_SID = Deno.env.get("TWILIO_ACCOUNT_SID");
-const TWILIO_AUTH_TOKEN = Deno.env.get("TWILIO_AUTH_TOKEN");
-const TWILIO_PHONE_NUMBER = Deno.env.get("TWILIO_PHONE_NUMBER") ||
-    "whatsapp:+18095749999"; // Número de empresa con WhatsApp Business
 
 export type Platform = "telegram" | "whatsapp" | "voice" | "whatsapp_kapso";
 
@@ -15,9 +11,9 @@ export async function sendMessage(
     recipientId: string | number,
     text: string,
     replyMarkup?: any,
-) {
+): Promise<number | null> {
     if (platform === "telegram") {
-        await sendToTelegram(Number(recipientId), text, replyMarkup);
+        return await sendToTelegram(Number(recipientId), text, replyMarkup);
     } else if (platform === "whatsapp") {
         await sendToWhatsApp(String(recipientId), text);
     } else if (platform === "whatsapp_kapso") {
@@ -25,12 +21,13 @@ export async function sendMessage(
     } else {
         console.log(`📡 [VOICE SIMULATION] Para ${recipientId}: "${text}"`);
     }
+    return null;
 }
 
-export async function sendToTelegram(chatId: number, text: string, replyMarkup?: any) {
+export async function sendToTelegram(chatId: number, text: string, replyMarkup?: any): Promise<number | null> {
     if (!TELEGRAM_TOKEN) {
         console.error("❌ No se encontró TELEGRAM_BOT_TOKEN");
-        return;
+        return null;
     }
 
     try {
@@ -55,27 +52,67 @@ export async function sendToTelegram(chatId: number, text: string, replyMarkup?:
         if (!response.ok) {
             const error = await response.text();
             console.error(`❌ Error enviando a Telegram (${chatId}):`, error);
+            return null;
         }
+
+        const data = await response.json();
+        return data?.result?.message_id ?? null;
     } catch (error) {
         console.error("❌ Error de red con Telegram:", error);
+        return null;
     }
 }
 
 /**
- * Envia un mensaje de WhatsApp usando Meta Cloud API (Preferencia) o Twilio (Fallback/Legacy)
+ * Edita un mensaje existente de Telegram (quita botones y actualiza texto).
+ * Usado cuando un pedido se reasigna para limpiar el chat del taxista anterior.
  */
+export async function editTelegramMessage(chatId: number, messageId: number, newText: string): Promise<void> {
+    if (!TELEGRAM_TOKEN || !messageId) return;
+    try {
+        await fetch(`https://api.telegram.org/bot${TELEGRAM_TOKEN}/editMessageText`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+                chat_id: chatId,
+                message_id: messageId,
+                text: newText,
+                parse_mode: "Markdown",
+                reply_markup: { inline_keyboard: [] }, // quitar botones
+            }),
+        });
+    } catch (err) {
+        console.error("❌ Error editando mensaje de Telegram:", err);
+    }
+}
+
+/**
+ * Elimina un mensaje de Telegram.
+ */
+export async function deleteTelegramMessage(chatId: number, messageId: number): Promise<void> {
+    if (!TELEGRAM_TOKEN || !messageId) return;
+    try {
+        await fetch(`https://api.telegram.org/bot${TELEGRAM_TOKEN}/deleteMessage`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ chat_id: chatId, message_id: messageId }),
+        });
+    } catch (err) {
+        console.error("❌ Error eliminando mensaje de Telegram:", err);
+    }
+}
+
 export async function sendToWhatsApp(to: string, text: string) {
     const WHATSAPP_ACCESS_TOKEN = Deno.env.get("WHATSAPP_ACCESS_TOKEN");
     const WHATSAPP_PHONE_NUMBER_ID = Deno.env.get("WHATSAPP_PHONE_NUMBER_ID");
 
-    // 1. INTENTAR CON META CLOUD API (Oficial)
+    // 1. ENVIAR CON META CLOUD API (Oficial)
     if (WHATSAPP_ACCESS_TOKEN && WHATSAPP_PHONE_NUMBER_ID) {
         try {
-            // Limpiar el número (solo números)
             const cleanTo = to.replace(/\D/g, "");
             const url = `https://graph.facebook.com/v22.0/${WHATSAPP_PHONE_NUMBER_ID}/messages`;
 
-            console.log(`📡 Intentando enviar vía Meta a ${cleanTo}...`);
+            console.log(`📡 Enviando vía Meta a ${cleanTo}...`);
             const response = await fetch(url, {
                 method: "POST",
                 headers: {
@@ -104,40 +141,7 @@ export async function sendToWhatsApp(to: string, text: string) {
         }
     }
 
-    // 2. FALLBACK A TWILIO (Legacy)
-    if (TWILIO_ACCOUNT_SID && TWILIO_AUTH_TOKEN) {
-        try {
-            const formData = new URLSearchParams();
-            formData.append(
-                "To",
-                to.startsWith("whatsapp:") ? to : `whatsapp:${to}`,
-            );
-            formData.append("From", TWILIO_PHONE_NUMBER);
-            formData.append("Body", text);
-
-            const url = `https://api.twilio.com/2010-04-01/Accounts/${TWILIO_ACCOUNT_SID}/Messages.json`;
-            const auth = btoa(`${TWILIO_ACCOUNT_SID}:${TWILIO_AUTH_TOKEN}`);
-
-            const response = await fetch(url, {
-                method: "POST",
-                headers: {
-                    "Authorization": `Basic ${auth}`,
-                    "Content-Type": "application/x-www-form-urlencoded",
-                },
-                body: formData.toString(),
-            });
-
-            if (!response.ok) {
-                const error = await response.text();
-                console.error(`❌ Error enviando a WhatsApp vía Twilio (${to}):`, error);
-            }
-            return;
-        } catch (error) {
-            console.error("❌ Error de red con Twilio:", error);
-        }
-    }
-
-    console.warn("⚠️ Ningún proveedor de WhatsApp configurado.");
+    console.warn("⚠️ Meta Cloud API no configurado.");
     console.log(`[SIMULACIÓN WHATSAPP] Para: ${to}, Mensaje: ${text}`);
 }
 

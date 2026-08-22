@@ -339,32 +339,14 @@ verify_jwt = false
 import_map = "./functions/telegram-webhook/deno.json"
 entrypoint = "./functions/telegram-webhook/index.ts"
 
-[functions.whatsapp-webhook]
-enabled = true
-verify_jwt = false
-entrypoint = "./functions/whatsapp-webhook/index.ts"
-
-[functions.twilio-voice-webhook]
-enabled = true
-verify_jwt = false
-entrypoint = "./functions/twilio-voice-webhook/index.ts"
-
 [functions.whatsapp-kapso-webhook]
 enabled = true
 verify_jwt = false
 entrypoint = "./functions/whatsapp-kapso-webhook/index.ts"
 
-[functions.whatsapp-meta-webhook]
+[functions.voice-agent-webhook]
 enabled = true
 verify_jwt = false
-entrypoint = "./functions/whatsapp-meta-webhook/index.ts"
+entrypoint = "./functions/voice-agent-webhook/index.ts"
 
-[functions.plivo-voice-webhook]
-enabled = true
-verify_jwt = false
-entrypoint = "./functions/plivo-voice-webhook/index.ts"
 
-[functions.zadarma-voice-webhook]
-enabled = true
-verify_jwt = false
-entrypoint = "./functions/zadarma-voice-webhook/index.ts"
