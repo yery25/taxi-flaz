@@ -250,6 +250,7 @@ export async function procesarPedidoTaxi(
                                `👤 *Cliente:* ${clienteNombreDisplay}\n` +
                                (telefonoContacto ? `📞 *Teléfono:* \`${telefonoContacto}\` *(toca para copiar/llamar)*\n` : ``) +
                                `📍 *Ubicación:* ${ubicacionLimpia || "Jarabacoa"}\n\n` +
+                               `⏳ *Tienes 60 segundos para aceptar o se pasará al siguiente turno.*\n\n` +
                                `¿Aceptas este pedido para contactar al cliente de inmediato?`;
 
                 const inline_keyboard: Record<string, string>[][] = [
@@ -294,6 +295,17 @@ export async function procesarPedidoTaxi(
                     aiResponse || `¡Perfecto! El taxista ${taxi.nombre} ha sido notificado.`
                 );
             }
+
+            // ⏰ 6. AUTO-TIMEOUT EN SEGUNDO PLANO (A los 60 segundos exactos)
+            // No depende del cron externo: a los 61 segundos revisa si sigue ASIGNADO y lo pasa al siguiente turno
+            setTimeout(async () => {
+                try {
+                    console.log(`⏰ [Auto-Timeout 60s] Verificando pedido ${pedidoInserted?.id}...`);
+                    await verificarTimeoutsPedidos(supabase);
+                } catch (tErr) {
+                    console.error("Error en auto-timeout 60s:", tErr);
+                }
+            }, 61000);
         } catch (bgErr) {
             console.error("❌ Error en tareas de fondo (runBackgroundTasks):", bgErr);
         }
