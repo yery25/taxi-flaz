@@ -853,20 +853,19 @@ export async function verificarTimeoutsPedidos(supabase: SupabaseClient) {
             await editTelegramMessage(
                 Number(taxi.telegram_id),
                 Number(pedido.telegram_message_id),
-                `⏰ *TIEMPO AGOTADO (60 seg)*\n\n📍 ${pedido.origen}\n\nNo respondiste a tiempo. Este servicio fue pasado al siguiente taxista de turno.`
+                `⏰ *TIEMPO AGOTADO (60 seg)*\n\n📍 ${pedido.origen}\n\nNo respondiste a tiempo. El sistema te ha puesto OFFLINE para no retrasar más servicios. Cuando estés listo, pide turno de nuevo.`
             );
         }
 
-        // 2. Mover al taxista al final de la cola - SOLO si no está OFFLINE (respetando su decisión)
+        // 2. Poner al taxista OFFLINE automáticamente por no responder
         if (taxi) {
             const { data: taxiActual } = await supabase.from("taxis").select("estado").eq("id", taxiId).single();
             if (taxiActual && taxiActual.estado !== "OFFLINE") {
                 await supabase.from("taxis").update({ 
-                    estado: "DISPONIBLE",
-                    creado: new Date().toISOString()
+                    estado: "OFFLINE",
+                    turno: null
                 }).eq("id", taxiId);
-            } else {
-                console.log(`⛔ Taxista ${taxi.nombre} está OFFLINE, no se reactiva tras timeout.`);
+                console.log(`📴 Taxista ${taxi?.nombre} puesto OFFLINE automáticamente por timeout.`);
             }
         }
 

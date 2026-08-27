@@ -159,8 +159,12 @@ serve(async (req: Request) => {
 
     // ✅ PREVENIR RETRIES DE VAPI (Bucle de Notificaciones Masivas)
     // Si Vapi hace timeout y reintenta el webhook, NO debemos crear otro pedido ni cerrar el anterior.
-    // Simplemente devolvemos el mensaje de éxito INMEDIATAMENTE para que el bot hable.
+    // Además, aplicamos un "Jitter" aleatorio para evitar Race Conditions si VAPI envía solicitudes concurrentes.
     if (cleanedPhone && cleanedPhone !== "0") {
+      // Jitter aleatorio entre 100ms y 1500ms
+      const jitterMs = Math.floor(Math.random() * 1400) + 100;
+      await new Promise((resolve) => setTimeout(resolve, jitterMs));
+
       const { data: yaAsignado } = await supabase
         .from("pedidos")
         .select("id")
