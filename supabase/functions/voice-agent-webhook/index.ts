@@ -165,16 +165,21 @@ serve(async (req: Request) => {
       const jitterMs = Math.floor(Math.random() * 1400) + 100;
       await new Promise((resolve) => setTimeout(resolve, jitterMs));
 
+      const quinceMinutosAtras = new Date(Date.now() - 15 * 60 * 1000).toISOString();
+      const variantes = Array.from(new Set([customerPhone, cleanedPhone, `+${cleanedPhone}`])).filter(Boolean);
+
       const { data: yaAsignado } = await supabase
         .from("pedidos")
-        .select("id")
-        .eq("cliente_contacto", customerPhone)
-        .in("estado", ["ASIGNADO", "EN_CAMINO"])
+        .select("id, estado")
+        .or(`cliente_contacto.in.(${variantes.join(",")}),cliente_telegram_id.in.(${variantes.join(",")})`)
+        .in("estado", ["CREADO", "ASIGNADO", "EN_CAMINO"])
+        .gt("creado", quinceMinutosAtras)
+        .order("creado", { ascending: false })
         .limit(1)
         .maybeSingle();
 
       if (yaAsignado) {
-        console.log(`⚠️ Vapi reintentó el webhook para ${customerPhone} (Ya está ASIGNADO). Devolviendo éxito rápido...`);
+        console.log(`⚠️ Vapi reintentó el webhook para ${customerPhone} (Ya está ${yaAsignado.estado}). Devolviendo éxito rápido...`);
         
         let resultMessage = "¡Perfecto! Ya tienes un taxista asignado. Él se pondrá en contacto contigo de inmediato al celular. ¡Que pases un excelente día y gracias por llamar a Taxi Flash!";
         

@@ -148,17 +148,23 @@ export async function procesarPedidoTaxi(
 
     const taxi = taxis[0];
 
-    // 2. Deduplicar: si ya existe un pedido ASIGNADO para este cliente, no crear otro
+    // 2. Deduplicar: si ya existe un pedido ACTIVO para este cliente (últimos 15 min), no crear otro
     if (clienteContacto && clienteContacto !== "Desconocido" && clienteContacto !== "0") {
+        const quinceMinutosAtras = new Date(Date.now() - 15 * 60 * 1000).toISOString();
+        const telDigitos = String(clienteContacto).replace(/\D/g, "");
+        const variantes = Array.from(new Set([clienteContacto, telDigitos, `+${telDigitos}`])).filter(Boolean);
+
         const { data: pedidoExistente } = await supabase
             .from("pedidos")
-            .select("id")
-            .eq("cliente_contacto", clienteContacto)
-            .eq("estado", "ASIGNADO")
+            .select("id, estado")
+            .or(`cliente_contacto.in.(${variantes.join(",")}),cliente_telegram_id.in.(${variantes.join(",")})`)
+            .in("estado", ["CREADO", "ASIGNADO", "EN_CAMINO"])
+            .gt("creado", quinceMinutosAtras)
             .limit(1)
             .maybeSingle();
+
         if (pedidoExistente) {
-            console.log(`⚠️ Ya existe un pedido ASIGNADO para ${clienteContacto}. Ignorando duplicado.`);
+            console.log(`⚠️ Ya existe un pedido activo (${pedidoExistente.estado}) para ${clienteContacto}. Ignorando duplicado.`);
             return null;
         }
     }
@@ -494,6 +500,25 @@ export async function confirmarPedido(
         "id",
         taxi.id,
     );
+
+    // 🧹 Limpieza inmediata de duplicados y lista de espera para este cliente
+    if (pedido.cliente_contacto || pedido.cliente_telegram_id) {
+        const telRef = pedido.cliente_contacto || pedido.cliente_telegram_id;
+        const telDigitos = String(telRef).replace(/\D/g, "");
+        const variantes = Array.from(new Set([telRef, telDigitos, `+${telDigitos}`])).filter(Boolean);
+
+        // Limpiar de lista de espera
+        await supabase.from("lista_de_espera")
+            .delete()
+            .or(`cliente_contacto.in.(${variantes.join(",")}),cliente_id.in.(${variantes.join(",")})`);
+
+        // Cancelar pedidos fantasma duplicados que pudieran haber quedado en ASIGNADO o CREADO
+        await supabase.from("pedidos")
+            .update({ estado: "CANCELADO" })
+            .neq("id", pedido.id)
+            .or(`cliente_contacto.in.(${variantes.join(",")}),cliente_telegram_id.in.(${variantes.join(",")})`)
+            .in("estado", ["ASIGNADO", "CREADO"]);
+    }
 
     // 3. Avisar al cliente (Asumimos WhatsApp si el ID parece un teléfono, o Telegram si es numérico corto)
     const clienteId = String(pedido.cliente_telegram_id);
