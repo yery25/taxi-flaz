@@ -69,8 +69,15 @@ serve(async (req: Request) => {
     let toolCallId = "default";
 
     // CASO A: Vapi Server Webhook (General Server URL)
-    // Formato: { message: { type: "tool-calls", toolCalls: [...] } }
-    if (payload.message && payload.message.type === "tool-calls") {
+    if (payload.message) {
+      if (payload.message.type !== "tool-calls") {
+        console.log(`ℹ️ Ignorando evento informativo de Vapi: ${payload.message.type}`);
+        return new Response(JSON.stringify({ status: "ignored", type: payload.message.type }), {
+          status: 200,
+          headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" },
+        });
+      }
+
       isDirectTool = false;
       const message = payload.message;
       const toolCalls = message.toolCalls || [];
@@ -89,8 +96,9 @@ serve(async (req: Request) => {
       }
 
       toolCallId = toolCall.id || "default";
-      origen = args.origen || args.direccion || args.location || args.ubicacion || args.address || "";
-      nombre = args.nombre || args.customer_name || args.name || args.cliente || "Cliente de Voz";
+      origen = args.origen || args.direccion || args.location || args.ubicacion || args.address || "Solicitado por llamada de voz";
+      const rawNombre = args.nombre || args.customer_name || args.name || args.cliente || "";
+      nombre = (rawNombre && rawNombre !== "null" && rawNombre !== "undefined") ? rawNombre : "Cliente";
       customerPhone = 
         args.telefono || args.phone || args.cliente_contacto || args.contacto || args.whatsapp ||
         message.customer?.number || 
@@ -112,8 +120,9 @@ serve(async (req: Request) => {
       }
 
       toolCallId = payload.toolCallId || payload.id || "default";
-      origen = args.origen || args.direccion || args.location || args.ubicacion || args.address || "";
-      nombre = args.nombre || args.customer_name || args.name || args.cliente || "Cliente de Voz";
+      origen = args.origen || args.direccion || args.location || args.ubicacion || args.address || "Solicitado por llamada de voz";
+      const rawNombreDirect = args.nombre || args.customer_name || args.name || args.cliente || "";
+      nombre = (rawNombreDirect && rawNombreDirect !== "null" && rawNombreDirect !== "undefined") ? rawNombreDirect : "Cliente";
       customerPhone = args.telefono || args.phone || args.cliente_contacto || args.contacto || args.customerPhone || args.customerNumber || args.number || "Desconocido";
     }
 
