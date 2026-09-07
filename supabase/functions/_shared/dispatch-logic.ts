@@ -297,15 +297,14 @@ export async function procesarPedidoTaxi(
             }
 
             // ⏰ 6. AUTO-TIMEOUT EN SEGUNDO PLANO (A los 60 segundos exactos)
-            // No depende del cron externo: a los 61 segundos revisa si sigue ASIGNADO y lo pasa al siguiente turno
-            setTimeout(async () => {
-                try {
-                    console.log(`⏰ [Auto-Timeout 60s] Verificando pedido ${pedidoInserted?.id}...`);
-                    await verificarTimeoutsPedidos(supabase);
-                } catch (tErr) {
-                    console.error("Error en auto-timeout 60s:", tErr);
-                }
-            }, 61000);
+            // Usamos await Promise para que EdgeRuntime.waitUntil mantenga el runtime vivo durante los 61s
+            try {
+                await new Promise((resolve) => setTimeout(resolve, 61000));
+                console.log(`⏰ [Auto-Timeout 60s] Verificando pedido ${pedidoInserted?.id}...`);
+                await verificarTimeoutsPedidos(supabase);
+            } catch (tErr) {
+                console.error("Error en auto-timeout 60s:", tErr);
+            }
         } catch (bgErr) {
             console.error("❌ Error en tareas de fondo (runBackgroundTasks):", bgErr);
         }
@@ -373,12 +372,14 @@ export async function asignarPedidosPendientes(supabase: SupabaseClient, excluir
     if ((!espera || espera.length === 0) && (!pedidosPendientes || pedidosPendientes.length === 0)) return;
 
     // 2. Buscar si hay taxi disponible
-    // También excluir taxistas que ya rechazaron este pedido
+    // También excluir taxistas que ya rechazaron este pedido (sanitizando UUIDs para evitar error 22P02 de Postgres)
     const origenEspera = espera && espera.length > 0 ? (espera[0].origen || '') : '';
     const matchRechazaronEspera = origenEspera.match(/\[Rechazaron: ([^\]]+)\]/);
-    const idsRechazaron: string[] = matchRechazaronEspera ? matchRechazaronEspera[1].split(',') : [];
-    if (excluirTaxiId && !idsRechazaron.includes(excluirTaxiId)) {
-        idsRechazaron.push(excluirTaxiId);
+    const idsRechazaron: string[] = matchRechazaronEspera 
+        ? matchRechazaronEspera[1].split(',').map((id: string) => id.trim()).filter((id: string) => Boolean(id) && id.length > 5) 
+        : [];
+    if (excluirTaxiId && excluirTaxiId.trim() && !idsRechazaron.includes(excluirTaxiId.trim())) {
+        idsRechazaron.push(excluirTaxiId.trim());
     }
 
     let query = supabase
@@ -390,12 +391,20 @@ export async function asignarPedidosPendientes(supabase: SupabaseClient, excluir
 
     // Excluir a todos los taxistas que ya rechazaron este pedido
     for (const idRech of idsRechazaron) {
-        if (idRech) query = query.neq("id", idRech);
+        if (idRech && idRech.trim()) query = query.neq("id", idRech.trim());
     }
 
-    const { data: taxisDisponibles } = await query.limit(1);
+    const { data: taxisDisponibles, error: taxisError } = await query.limit(1);
 
-    if (!taxisDisponibles || taxisDisponibles.length === 0) return;
+    if (taxisError) {
+        console.error("❌ Error buscando taxis disponibles en lista de espera:", taxisError);
+        return;
+    }
+
+    if (!taxisDisponibles || taxisDisponibles.length === 0) {
+        console.log("📭 No hay más taxis disponibles en cola (excluidos:", idsRechazaron.length, ")");
+        return;
+    }
 
     const taxi = taxisDisponibles[0];
     
@@ -743,10 +752,10 @@ export async function rechazarPedido(
         let yaRechazaron: string[] = [];
         const matchRechazaron = pedido.origen?.match(/\[Rechazaron: ([^\]]+)\]/);
         if (matchRechazaron) {
-            yaRechazaron = matchRechazaron[1].split(',').map((id: string) => id.trim());
+            yaRechazaron = matchRechazaron[1].split(',').map((id: string) => id.trim()).filter((id: string) => Boolean(id) && id.length > 5);
         }
-        if (!yaRechazaron.includes(String(taxi.id))) {
-            yaRechazaron.push(String(taxi.id));
+        if (taxi.id && !yaRechazaron.includes(String(taxi.id).trim())) {
+            yaRechazaron.push(String(taxi.id).trim());
         }
 
         // Parsear número de reintentos actual
@@ -868,20 +877,18 @@ export async function verificarTimeoutsPedidos(supabase: SupabaseClient) {
         return;
     }
 
-    console.log(`⏰ Encontrados ${pedidosExpirados.length} pedidos con timeout real (> 60 seg). Procesando solo el más antiguo...`);
+    console.log(`⏰ Encontrados ${pedidosExpirados.length} pedidos con timeout real (> 60 seg). Procesando...`);
 
-    // FIX CRÍTICO: Procesar solo EL PRIMERO por ciclo del cron.
-    // Si hay múltiples pedidos expirados, procesarlos uno a uno en cada ejecución del cron
-    // para evitar la "tormenta" de asignarPedidosPendientes concurrentes.
-    const pedidoAOrdenar = pedidosExpirados.sort((a: Record<string, unknown>, b: Record<string, unknown>) => {
+    // Ordenar de más antiguo a más reciente para procesarlos en orden
+    const pedidosOrdenados = pedidosExpirados.sort((a: Record<string, unknown>, b: Record<string, unknown>) => {
         const creadoA = String(a.creado);
         const creadoB = String(b.creado);
         const ta = new Date(creadoA.endsWith('Z') ? creadoA : creadoA + 'Z').getTime();
         const tb = new Date(creadoB.endsWith('Z') ? creadoB : creadoB + 'Z').getTime();
         return ta - tb;
     });
-    // Solo procesar el pedido más antiguo
-    for (const pedido of [pedidoAOrdenar[0]]) {
+
+    for (const pedido of pedidosOrdenados) {
         const taxi = pedido.taxis;
         const taxiId = taxi?.id;
 
@@ -906,7 +913,7 @@ export async function verificarTimeoutsPedidos(supabase: SupabaseClient) {
             }
         }
 
-        // 3. Mover el pedido a la lista de espera para reasignación limpia (máximo 3 reintentos)
+        // 3. Mover el pedido a la lista de espera para reasignación limpia
         let nombreCliente = "Cliente Pendiente";
         if (pedido.origen && pedido.origen.includes("[Nombre: ")) {
             const matchName = pedido.origen.match(/\[Nombre: ([^\]]+)\]/);
@@ -960,17 +967,17 @@ export async function verificarTimeoutsPedidos(supabase: SupabaseClient) {
                 taxistaNombre: taxi?.nombre,
                 taxistaFicha: taxi?.numero_taxista,
                 reintentoNum: reintentos,
-                detalles: { origen: pedido.origen, proximoReintento: `${reintentos + 1}/3` }
+                detalles: { origen: pedido.origen, proximoReintento: `Pase a siguiente turno (#${reintentos + 1})` }
             });
 
             // Rastrear IDs de taxistas que no respondieron o rechazaron
             let yaRechazaron: string[] = [];
             const matchRechazaron = pedido.origen?.match(/\[Rechazaron: ([^\]]+)\]/);
             if (matchRechazaron) {
-                yaRechazaron = matchRechazaron[1].split(',').map((id: string) => id.trim());
+                yaRechazaron = matchRechazaron[1].split(',').map((id: string) => id.trim()).filter((id: string) => Boolean(id) && id.length > 5);
             }
-            if (taxiId && !yaRechazaron.includes(String(taxiId))) {
-                yaRechazaron.push(String(taxiId));
+            if (taxiId && !yaRechazaron.includes(String(taxiId).trim())) {
+                yaRechazaron.push(String(taxiId).trim());
             }
 
             // Actualizar la etiqueta de reintentos y rechazaron en el origen
@@ -993,7 +1000,7 @@ export async function verificarTimeoutsPedidos(supabase: SupabaseClient) {
                 origen: nuevoOrigen,
                 plataforma: "voice",
                 cliente_contacto: pedido.cliente_contacto || null,
-                mensaje_confirmacion: `Reasignado (Intento ${reintentos}/3)`
+                mensaje_confirmacion: `Reasignado (Pase a siguiente turno #${reintentos + 1})`
             });
 
             // 5. Reorganizar turnos y asignar al siguiente taxista

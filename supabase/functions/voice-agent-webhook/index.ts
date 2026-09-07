@@ -33,6 +33,13 @@ serve(async (req: Request) => {
       });
     }
 
+    // ⏰ Limpiar timeouts pendientes antes de procesar
+    try {
+      await verificarTimeoutsPedidos(supabase);
+    } catch (tErr) {
+      console.error("Error verificando timeouts al inicio de voice agent:", tErr);
+    }
+
     // Leer el body como texto raw primero para evitar errores de JSON malformado
     const rawBody = await req.text();
     console.log("📥 Raw body recibido:", rawBody.substring(0, 500));

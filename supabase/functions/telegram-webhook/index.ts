@@ -41,6 +41,13 @@ serve(async (req: Request) => {
       return new Response("Solo POST permitido", { status: 405 });
     }
 
+    // ⏰ Limpiar timeouts pendientes en cada interacción de Telegram
+    try {
+      await verificarTimeoutsPedidos(supabase);
+    } catch (tErr) {
+      console.error("Error verificando timeouts al inicio de Telegram:", tErr);
+    }
+
     const body = await req.json();
 
     if (!body.message && !body.callback_query) return new Response("ok");
